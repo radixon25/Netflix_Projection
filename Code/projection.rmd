@@ -1,0 +1,185 @@
+---
+title: "Netflix Projection"
+author: "Rashad Dixon"
+date: "5/9/2022"
+output: pdf_document
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+all_wdate <- read.csv(here('Data','netflix_titles.csv.')) %>%
+  subset(select = c('date_added','type','title','country','rating','listed_in'))
+
+shows_wrate <- read.csv(here('data','tv_shows.csv'))
+shows_wrate$IMDb <- as.numeric(str_sub(shows_wrate$IMDb,end = -4))
+shows_wrate$Rotten.Tomatoes <- str_sub(shows_wrate$Rotten.Tomatoes,end = -5)
+
+
+
+stock <- read.csv(here('Data','netflix.csv')) %>%
+  separate(Date,into = c('Year','Month','Day'))
+
+movies_wrate <- read.csv(here('Data','MoviesOnStreamingPlatforms.csv'))
+movies_wrate$Rotten.Tomatoes <- str_sub(movies_wrate$Rotten.Tomatoes, end = -5)
+movies_wrate$IMDb <- 0
+
+
+snp <- read.csv(here('Data','snp.csv'))
+snp$snpperc <- 0
+for (i in 2:nrow(snp)){
+  snp[i,'snpperc'] <- (snp[i,'SP500']-snp[i-1,'SP500'])/snp[i-1,'SP500']
+}
+
+snp<- snp %>%
+  tail(-500)%>%
+  separate(Date,c('Month','Day','Year'))
+
+tech <- read.csv(here('Data','tech.csv'))
+tech$techper <- 0
+for (i in 3:nrow(tech)){
+  tech[i,'techper'] <- (tech[i,'Close']-tech[i-1,'Close'])/tech[i-1,'Close']
+}
+tech <- tech %>%
+  tail(-2) %>%
+  separate(Date,into = c('Month','Day','Year'))
+```
+Interaction variable of The ratings of the shows and where they were available
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+Convert daily stock data to monthly to get MoM change in stock price
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+stock$thirtyday_Open <- 0
+stock$thirtyday_Close <- 0
+stock$n <- 0
+for (i in 1:nrow(stock)){
+  stock[i,'thirtyday_Open'] <- stock[i,'Open']
+  stock[i,'thirtyday_Close'] <- stock[i+20,7]
+  stock[i,'n'] <- i
+}
+
+stock_thirty <- stock[stock$n == 1 | stock$n %% 21 == 1,]
+stock_thirty$perc <- (stock_thirty$thirtyday_Close - stock_thirty$thirtyday_Open)/stock_thirty$thirtyday_Open
+stock_thirty$perc_n1 <- 0
+for (i in 2:nrow(stock_thirty)){
+  stock_thirty[i,'perc_n1'] <- stock_thirty[i-1,'perc']
+}
+
+```
+
+
+Merge Shows/Movies/Dates
+Random Forest Dataframe: df
+Recursive Partitioning Dataframe: df2
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+all_wrate <- merge(shows_wrate,movies_wrate,all.y = TRUE, all.x = TRUE)
+
+df <- merge(all_wdate,all_wrate,by.x = 'title', by.y = 'Title', all.x = TRUE, all.y = TRUE )%>%
+  separate(date_added,into = c('Month','Day','Year'))%>%
+    na.omit()
+df$HRT <- as.numeric(df$Hulu) * as.numeric(df$Rotten.Tomatoes)
+df$ART <- as.numeric(df$Hulu) * as.numeric(df$Rotten.Tomatoes)
+df$DRT <- as.numeric(df$Disney.) * as.numeric(df$Rotten.Tomatoes)
+df$NRT <- as.numeric(df$Netflix) * as.numeric(df$Rotten.Tomatoes)
+df <- df[!(is.na(df$Month) | df$Month == ""),]
+for (i in 1:nrow(df)){
+  df[i,'Month'] <- which(month.name == df[i,'Month'])
+}
+
+
+df2 <- merge(all_wdate,all_wrate,by.x = 'title', by.y = 'Title', all.x = TRUE, all.y = TRUE ) %>%
+    separate(date_added,into = c('Month','Day','Year'))
+  
+
+```
+
+Add matching n to df:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+df$n <- 0
+df$date <- as.Date(with(df,paste(Year,Month,Day, sep = '-')),"%Y-%m-%d")
+stock_thirty$date <- as.Date(with(stock_thirty,paste(Year,Month,Day, sep = '-')),"%Y-%m-%d")
+for (i in 1:nrow(df)){
+  x <- stock_thirty[which(stock_thirty$date < df[i,'date']),]
+  df[i,'n'] <- max(x$n)
+}
+
+snp$n <- 0
+snp$date <- as.Date(with(snp,paste(Year,Month,Day,sep = '-')),"%Y-%m-%d") 
+for (i in 1:nrow(snp)){
+  y <- stock_thirty[which(stock_thirty$date < snp[i,'Date']),]
+  snp[i,'n'] <- max(y$n)
+}
+tech$n <- 0
+tech$date <- as.Date(with(tech,paste(Year,Month,Day, sep = '-')),"%Y-%m-%d")
+for (i in 1:nrow(tech)){
+  z <- stock_thirty[which(stock_thirty$date < tech[i,'date']),]
+  tech[i,'n'] <- max(z$n)
+}
+df$cat_fact <- factor(df$listed_in)
+df$cat_fact <- unclass(df$cat_fact)
+df <- df[!(df$NRT > 0 & df$Netflix < 1)|!(df$HRT > 0 & df$Hulu < 1) | !(df$ART > 0 & df$Prime.Video < 1) | !(df$DRT > 0 & df$Disney.<1),]
+
+
+```
+Group df by n
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+df_g <- df[which(df$Netflix > 0),]%>%
+  group_by(n) %>%
+  summarise(mean_rat = sum(NRT)/sum(as.numeric(Netflix)),max_rat = max(NRT),Net = sum(as.numeric(Netflix)),Dis = sum(as.numeric(Disney.)), Hulu = sum(as.numeric(Hulu)), AMZ = sum(as.numeric(Prime.Video)),dis_q = (sum(DRT)/sum(as.numeric(Disney.))),hulu_q = (sum(HRT)/sum(as.numeric(Hulu))),amz_q = (sum(ART)/sum(as.numeric(Prime.Video))),us_rel = sum(Netflix[country == 'United States']))
+df_g <- df_g %>%
+  mutate_if(is.numeric,function(x) ifelse(is.infinite(x),0,x))%>%
+  mutate_if(is.numeric,function(x) ifelse(is.na(x),0,x))
+
+```
+Combine S&P and full df
+Random forrest for growth on content, cpi, 
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+rfdf <- merge(stock_thirty,df_g, by = 'n' )
+fdf <- merge(rfdf,tech,by = 'n')
+fd <- merge(fdf,snp,by = 'n')
+
+smp <- floor(.75*nrow(fd))
+set.seed(123)
+train_ind <- sample(seq_len(nrow(fd)), size = smp)
+train <- fd[train_ind,]
+test <- fd[-train_ind,]
+
+rf1 <- randomForest(perc ~ max_rat + mean_rat + snpperc  + us_rel + perc_n1 + techper, data = train,na.action = na.omit,importance = TRUE)
+```
+rmse and prediction
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+train_rmse = rmse(rf1,train)
+test_rmse = rmse(rf1,test)
+train_rmse
+test_rmse
+
+yhat <- predict(rf1,fd)
+result <- fd
+result$prediction <- yhat
+result$resid <- result$perc -result$prediction
+
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(result, aes(x = date)) +
+  geom_line(aes(y = perc),color = 'darkred') +
+  geom_line(aes(y = prediction),color = 'steelblue',linetype = 'twodash')
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE, }
+ggplot(result,aes(x = date))+
+  geom_line(aes(y = resid))
+```
+```{r, echo=FALSE, message=FALSE}
+result$dir <- ifelse(result$perc/result$prediction > 0, 1,0)
+mean(result$dir)
+ggplot(result,aes(resid)) + 
+  geom_histogram()
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
